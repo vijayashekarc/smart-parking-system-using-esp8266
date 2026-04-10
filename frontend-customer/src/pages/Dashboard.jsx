@@ -10,68 +10,100 @@ function Dashboard() {
   useEffect(() => {
     if (!user) navigate('/');
     fetchLayout();
-    const interval = setInterval(fetchLayout, 3000);
+    
+    // 2-second heartbeat to stay synced with the ESP8266 hardware
+    const interval = setInterval(fetchLayout, 2000); 
+    
     return () => clearInterval(interval);
   }, [user, navigate]);
 
   const fetchLayout = async () => {
     try {
-      const res = await axios.get('http://localhost:5000/api/layout');
+      // Cache-buster ensures we always get the live hardware state
+      const res = await axios.get(`http://localhost:5000/api/layout?t=${new Date().getTime()}`);
       setSlots(res.data);
     } catch (err) {
-      console.error("Failed to fetch layout");
+      console.error("❌ Failed to fetch layout:", err);
     }
   };
 
-  const handlePark = async (slot_id) => {
+  // --- NEW WORKFLOW: 1. RESERVE SLOT ---
+  const handleReserve = async () => {
     try {
-      await axios.post('http://localhost:5000/api/park', { phone_no: user.phone_no, slot_id });
-      fetchLayout(); // Refresh instantly
+      await axios.post('http://localhost:5000/api/reserve', { phone_no: user.phone_no });
+      fetchLayout(); 
     } catch (err) {
-      alert(err.response?.data?.message || "Failed to park");
+      alert(err.response?.data?.message || "Failed to reserve");
     }
   };
 
-  const handleLeave = async (slot_id) => {
+  // --- NEW WORKFLOW: 2. CANCEL RESERVATION ---
+  const handleCancelReserve = async () => {
     try {
-      await axios.post('http://localhost:5000/api/leave', { phone_no: user.phone_no, slot_id });
-      alert("Left the slot. Bill generated! Check your logs to pay.");
+      await axios.post('http://localhost:5000/api/cancel-reservation', { phone_no: user.phone_no });
       fetchLayout();
-    } catch (err) {
-      alert("Failed to leave");
+    } catch (err) { 
+      console.error(err); 
     }
   };
 
-  const parkAnywhere = () => {
-    const freeSlot = slots.find(s => !s.occupied);
-    if (freeSlot) handlePark(freeSlot.id);
-    else alert("Parking Lot is Full!");
+  // --- NEW WORKFLOW: 3. HARDWARE SIMULATIONS ---
+  // These buttons pretend to be your physical ESP8266 sensors
+  const simulateArrival = async (slot_id) => {
+    await axios.post('http://localhost:5000/api/simulate-arrival', { slot_id });
+    fetchLayout();
   };
 
-  // 🛑 RULE CHECK: Is this specific user already parked in ANY slot?
-  const isUserAlreadyParked = slots.some(slot => slot.parked_by === user?.phone_no);
+  const simulateDeparture = async (slot_id) => {
+    await axios.post('http://localhost:5000/api/simulate-departure', { slot_id });
+    alert("Vehicle Left! The sensor has auto-generated your bill. Check Logs to pay.");
+    fetchLayout();
+  };
+
+  // 🛑 RULE CHECK: Does the user have ANY active connection to a slot (reserved or parked)?
+  const mySlot = slots.find(slot => slot.parked_by === user?.phone_no);
+  const isBusy = !!mySlot; 
 
   // Helper function to safely render a slot without React re-mounting bugs
   const renderSlot = (slot_id) => {
-    const slot = slots.find(s => s.id === slot_id) || { id: slot_id, occupied: false, parked_by: null };
-    const isMyCar = slot.parked_by === user?.phone_no;
-    const bg = isMyCar ? '#3498db' : slot.occupied ? '#e74c3c' : '#2ecc71';
+    const slot = slots.find(s => s.id === slot_id) || { id: slot_id, occupied: false, reserved: false, parked_by: null };
+    
+    const isMyReservation = slot.reserved && slot.parked_by === user?.phone_no;
+    const isMyCar = slot.occupied && slot.parked_by === user?.phone_no;
+    
+    // UI COLORS: Occupied = Blue, Reserved = Orange, Busy/Stranger = Red, Free = Green
+    let bg = '#2ecc71'; // Free
+    if (slot.occupied && !isMyCar) bg = '#e74c3c'; // Stranger Parked
+    if (slot.reserved && !isMyReservation) bg = '#e74c3c'; // Stranger Reserved
+    if (isMyReservation) bg = '#f39c12'; // Reserved by ME
+    if (isMyCar) bg = '#3498db'; // Parked by ME
+
+    let statusText = 'FREE';
+    if (isMyReservation) statusText = 'RESERVED (Drive in!)';
+    else if (isMyCar) statusText = 'MY CAR';
+    else if (slot.occupied || slot.reserved) statusText = 'BUSY';
 
     return (
       <div key={slot.id} style={{ ...styles.slot, background: bg }}>
         <h2 style={{ margin: '0 0 5px 0', fontSize: '1.5rem' }}>{slot.id}</h2>
-        <span style={{ fontSize: '0.8rem', letterSpacing: '1px' }}>
-          {isMyCar ? 'MY CAR' : slot.occupied ? 'BUSY' : 'FREE'}
+        <span style={{ fontSize: '0.65rem', letterSpacing: '1px', textAlign: 'center' }}>
+          {statusText}
         </span>
         
-        {/* DEMO BUTTONS */}
-        <div style={{ marginTop: '10px' }}>
-          {/* Only show "Park Here" if the slot is empty AND the user hasn't parked anywhere else */}
-          {!slot.occupied && !isUserAlreadyParked ? (
-            <button onClick={() => handlePark(slot.id)} style={styles.actionBtn}>🛠️ Park</button>
-          ) : isMyCar ? (
-            <button onClick={() => handleLeave(slot.id)} style={{...styles.actionBtn, background: '#f1c40f'}}>🛠️ Leave</button>
-          ) : null}
+        {/* SIMULATION BUTTONS */}
+        <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+          
+          {isMyReservation && (
+            <>
+              <button onClick={handleCancelReserve} style={{...styles.simBtn, background: '#c0392b', color: 'white'}}>Cancel Res.</button>
+              <button onClick={() => simulateArrival(slot.id)} style={styles.simBtn}>[Simulate Arrival]</button>
+            </>
+          )}
+
+          {isMyCar && (
+             <button onClick={() => simulateDeparture(slot.id)} style={styles.simBtn}>[Simulate Leave]</button>
+          )}
+          
         </div>
       </div>
     );
@@ -92,19 +124,19 @@ function Dashboard() {
         </div>
       </nav>
 
-      {/* AUTO PARK BUTTON */}
+      {/* RESERVE BUTTON */}
       <div style={{ textAlign: 'center', marginBottom: '20px' }}>
         <button 
-          onClick={parkAnywhere} 
-          disabled={isUserAlreadyParked}
+          onClick={handleReserve} 
+          disabled={isBusy}
           style={{ 
             ...styles.autoParkBtn, 
-            background: isUserAlreadyParked ? '#95a5a6' : '#27ae60', 
-            cursor: isUserAlreadyParked ? 'not-allowed' : 'pointer', 
-            boxShadow: isUserAlreadyParked ? 'none' : '0 4px 15px rgba(39, 174, 96, 0.4)' 
+            background: isBusy ? '#95a5a6' : '#8e44ad', // Purple for Reserve
+            cursor: isBusy ? 'not-allowed' : 'pointer', 
+            boxShadow: isBusy ? 'none' : '0 4px 15px rgba(142, 68, 173, 0.4)' 
           }}
         >
-          {isUserAlreadyParked ? "🚗 ALREADY PARKED" : "🚗 AUTO PARK NOW"}
+          {isBusy ? "🎟️ SLOT ALREADY CLAIMED" : "🎟️ RESERVE NEAREST SLOT"}
         </button>
       </div>
 
@@ -164,8 +196,8 @@ const styles = {
   drivewayText: { color: 'rgba(255,255,255,0.15)', fontWeight: '900', letterSpacing: '8px', writingMode: 'vertical-rl', transform: 'rotate(180deg)', fontSize: '2rem' },
 
   // INDIVIDUAL SLOTS
-  slot: { width: '130px', height: '100px', borderRadius: '8px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 'bold', border: '3px solid rgba(0,0,0,0.15)', transition: '0.3s' },
-  actionBtn: { cursor: 'pointer', padding: '5px 10px', borderRadius: '4px', border: 'none', fontWeight: 'bold', color: '#2c3e50', background: 'white', boxShadow: '0 2px 4px rgba(0,0,0,0.2)' }
+  slot: { width: '130px', height: '110px', borderRadius: '8px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 'bold', border: '3px solid rgba(0,0,0,0.15)', transition: '0.3s' },
+  simBtn: { cursor: 'pointer', padding: '4px 6px', borderRadius: '4px', border: 'none', fontWeight: 'bold', fontSize: '0.65rem', color: '#2c3e50', background: 'rgba(255,255,255,0.9)', transition: '0.2s' }
 };
 
 export default Dashboard;

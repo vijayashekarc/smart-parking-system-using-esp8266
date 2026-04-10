@@ -18,26 +18,34 @@ function ExitScanner() {
     }
 
     async function onScanSuccess(decodedText) {
-      scanner.clear(); // Stop scanning immediately to prevent spamming the backend
+      scanner.clear(); 
       setStatus('processing');
       setMessage('Verifying payment status...');
 
+      // ⚠️ UPDATE THIS TO YOUR ESP8266 IP ADDRESS
+      const ESP_IP = process.env.ESP_IP; 
+
       try {
-        // Send QR data to the Exit Backend
         const res = await axios.post('http://localhost:7000/api/exit/verify', { qr_data: decodedText });
         
         if (res.data.success) {
           setStatus('success');
           setMessage(res.data.message);
           
-          // Reset scanner after 5 seconds for the next car
+          // --- NEW: TRIGGER THE PHYSICAL GATE ---
+          try {
+             await axios.get(`http://${ESP_IP}/api/servo?state=on`);
+             console.log("Hardware Gate Opened!");
+          } catch (hwError) {
+             console.error("Payment cleared, but could not reach ESP8266 Gate:", hwError);
+             setMessage("✅ Clear! (Hardware Gate Offline)");
+          }
+
           setTimeout(() => resetScanner(), 5000);
         }
       } catch (err) {
         setStatus('error');
         setMessage(err.response?.data?.message || "Invalid QR Code or System Error");
-        
-        // Reset scanner after 5 seconds so they can try again after paying
         setTimeout(() => resetScanner(), 5000);
       }
     }
