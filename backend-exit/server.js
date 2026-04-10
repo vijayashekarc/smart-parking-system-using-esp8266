@@ -2,67 +2,82 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-
-const User = require('./models/User');
-const ParkingLog = require('./models/ParkingLog');
+const axios = require('axios'); // <-- NEW: Added axios to talk to the ESP8266
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
 mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ Exit Backend Connected to Master DB"))
-  .catch(err => console.error("❌ DB Error:", err));
+  .then(() => console.log("✅ Exit DB Connected"))
+  .catch(err => console.error("❌ Exit DB Error:", err));
 
-// --- API: VERIFY EXIT QR CODE ---
+// --- SHARED DATABASE MODELS ---
+const userSchema = new mongoose.Schema({
+  phone_no: String,
+  unique_QRcodeID: String,
+  name: String
+});
+const User = mongoose.model('User', userSchema);
+
+const logSchema = new mongoose.Schema({
+  phone_no: String,
+  current_status: String,
+  payment_status: { type: String, default: 'Pending' },
+  Entry_datetime: Date,
+  exit_datetime: Date
+});
+const ParkingLog = mongoose.model('ParkingLog', logSchema, 'parkinglogs'); 
+
+// ==========================================
+// --- EXIT VERIFICATION LOGIC ---
+// ==========================================
 app.post('/api/exit/verify', async (req, res) => {
   const { qr_data } = req.body;
   
-  console.log(`\n--- 🔍 SCAN RECEIVED ---`);
-  console.log(`Raw QR Data: "${qr_data}"`);
-
   try {
-    // 1. Clean the QR code string of any invisible spaces
-    const cleanQR = qr_data ? qr_data.trim() : "";
+    const user = await User.findOne({ unique_QRcodeID: qr_data });
+    if (!user) return res.status(404).json({ success: false, message: "Unknown QR Code" });
 
-    // 2. Find User
-    const user = await User.findOne({ unique_QRcodeID: cleanQR });
-    
-    if (!user) {
-      console.log(`❌ FAILED: Could not find user with QR: ${cleanQR}`);
-      return res.status(404).json({ success: false, message: "Invalid QR Code. User not found." });
-    }
-    
-    console.log(`✅ User Identified: ${user.name} (${user.phone_no})`);
-
-    // 3. Find Latest Log
     const latestLog = await ParkingLog.findOne({ phone_no: user.phone_no }).sort({ Entry_datetime: -1 });
 
-    if (!latestLog) {
-      console.log(`❌ FAILED: ${user.name} has no parking history.`);
-      return res.status(400).json({ success: false, message: "No parking history found for this user." });
+    if (!latestLog) return res.status(400).json({ success: false, message: "No parking history found." });
+
+    if (latestLog.current_status === 'Active') {
+      return res.status(400).json({ success: false, message: "Car is still parked! Drive out of the slot first." });
     }
 
-    console.log(`📋 Latest Log -> Status: ${latestLog.current_status} | Payment: ${latestLog.payment_status} | Bill: ₹${latestLog.bill_amount}`);
+    if (latestLog.payment_status === 'Pending') {
+      return res.status(402).json({ success: false, message: `Payment of ₹${latestLog.bill_amount} is Pending!` });
+    }
 
-    // 4. Check Rules
+    // --- NEW: BACKEND TRIGGERS THE GATE ---
     if (latestLog.payment_status === 'Paid') {
-      console.log(`✅ SUCCESS: Gate Opening for ${user.name}!`);
-      return res.json({ success: true, message: `Payment clear. Thank you, ${user.name}! Gate Opening...` });
-      
-    } else if (latestLog.current_status === 'Active') {
-      console.log(`🛑 BLOCKED: ${user.name} is still marked as Active.`);
-      return res.status(400).json({ success: false, message: "You are still marked as Parked! Please click 'Leave' on your dashboard first." });
-      
-    } else {
-      console.log(`🛑 BLOCKED: ${user.name} owes ₹${latestLog.bill_amount}.`);
-      return res.status(402).json({ success: false, message: `Access Denied! ₹${latestLog.bill_amount} is pending. Please pay on the app.` });
-    }
+      const espUrl = process.env.ESP_IP;
+      let gateMessage = "";
+
+      try {
+        if (espUrl) {
+          // Tell the ESP8266 to open the gate (timeout quickly so the scanner doesn't lag)
+          await axios.get(`${espUrl}/api/servo?state=on`, { timeout: 2000 });
+          console.log(`[HARDWARE] Gate opened for ${user.name}`);
+          gateMessage = "Gate Opening!";
+        } else {
+          console.log("[HARDWARE] ESP_IP not configured.");
+        }
+      } catch (hwError) {
+        console.error("[HARDWARE] Could not reach ESP8266 Gate:", hwError.message);
+        gateMessage = "(Hardware Offline)";
+      }
+
+      return res.json({ success: true, message: `Payment Verified! ${gateMessage} Drive safely, ${user.name}.` });
+    }gateMessage
+
+    res.status(400).json({ success: false, message: "System Error. Invalid Log State." });
 
   } catch (err) {
-    console.error("❌ CRITICAL SERVER ERROR:", err);
-    res.status(500).json({ success: false, message: "Server error during verification." });
+    res.status(500).json({ success: false, message: "Server Error" });
   }
 });
 
-app.listen(process.env.PORT, () => console.log(`🚪 Exit Backend running on port ${process.env.PORT}`));
+app.listen(process.env.PORT || 7000, () => console.log(`🚪 Exit Microservice running on port ${process.env.PORT || 7000}`));

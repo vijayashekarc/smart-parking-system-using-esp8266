@@ -7,7 +7,6 @@ function ExitScanner() {
   const [message, setMessage] = useState('Show your QR Code to exit');
 
   useEffect(() => {
-    // Initialize the camera scanner
     const scanner = new Html5QrcodeScanner('reader', {
       qrbox: { width: 250, height: 250 },
       fps: 5,
@@ -22,25 +21,14 @@ function ExitScanner() {
       setStatus('processing');
       setMessage('Verifying payment status...');
 
-      // ⚠️ UPDATE THIS TO YOUR ESP8266 IP ADDRESS
-      const ESP_IP = process.env.ESP_IP; 
-
       try {
+        // The frontend now ONLY talks to our secure backend
         const res = await axios.post('http://localhost:7000/api/exit/verify', { qr_data: decodedText });
         
         if (res.data.success) {
           setStatus('success');
-          setMessage(res.data.message);
-          
-          // --- NEW: TRIGGER THE PHYSICAL GATE ---
-          try {
-             await axios.get(`http://${ESP_IP}/api/servo?state=on`);
-             console.log("Hardware Gate Opened!");
-          } catch (hwError) {
-             console.error("Payment cleared, but could not reach ESP8266 Gate:", hwError);
-             setMessage("✅ Clear! (Hardware Gate Offline)");
-          }
-
+          // The backend message now includes whether the physical gate actually opened or not
+          setMessage(res.data.message); 
           setTimeout(() => resetScanner(), 5000);
         }
       } catch (err) {
@@ -51,7 +39,7 @@ function ExitScanner() {
     }
 
     function onScanError(err) {
-      // Ignore background scanning errors (happens when no QR is in frame)
+      // Ignore background scanning errors
     }
 
     return () => {
@@ -66,12 +54,11 @@ function ExitScanner() {
     setMessage('Show your QR Code to exit');
   };
 
-  // Dynamic Background Colors
   const getBgColor = () => {
-    if (status === 'success') return '#27ae60'; // Green
-    if (status === 'error') return '#c0392b';   // Red
-    if (status === 'processing') return '#2980b9'; // Blue
-    return '#2c3e50'; // Default Dark Blue
+    if (status === 'success') return '#27ae60'; 
+    if (status === 'error') return '#c0392b';   
+    if (status === 'processing') return '#2980b9'; 
+    return '#2c3e50'; 
   };
 
   return (
@@ -83,13 +70,11 @@ function ExitScanner() {
           {message}
         </h3>
 
-        {/* Camera Container */}
         <div 
           id="reader" 
           style={{ width: '100%', display: status === 'idle' ? 'block' : 'none', border: 'none' }}
         ></div>
 
-        {/* Big Emoji Status */}
         {status !== 'idle' && (
           <div style={{ fontSize: '6rem', margin: '40px 0', animation: 'pulse 1s infinite' }}>
             {status === 'success' ? '✅' : status === 'error' ? '🛑' : '⏳'}
@@ -109,23 +94,8 @@ function ExitScanner() {
 }
 
 const styles = {
-  page: { 
-    display: 'flex', 
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    height: '100vh', 
-    fontFamily: 'sans-serif',
-    transition: 'background-color 0.4s ease'
-  },
-  card: { 
-    background: 'white', 
-    padding: '40px', 
-    borderRadius: '20px', 
-    width: '90%', 
-    maxWidth: '500px', 
-    textAlign: 'center', 
-    boxShadow: '0 15px 35px rgba(0,0,0,0.3)' 
-  }
+  page: { display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', fontFamily: 'sans-serif', transition: 'background-color 0.4s ease' },
+  card: { background: 'white', padding: '40px', borderRadius: '20px', width: '90%', maxWidth: '500px', textAlign: 'center', boxShadow: '0 15px 35px rgba(0,0,0,0.3)' }
 };
 
 export default ExitScanner;
